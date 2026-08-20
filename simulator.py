@@ -15,6 +15,7 @@ from config import (
     SCALE,
     TURN_RADIUS_CM,
 )
+from b3_optimizer import B3RouteEngine
 from models import Obstacle, Pose
 from motion import move_curve, move_straight
 from route_engine import RouteEngine, point_in_virtual_obstacle
@@ -57,6 +58,8 @@ class MDPSimulator:
         self.root.bind("R", self.reset)
         self.root.bind("p", self.toggle_planned_route)
         self.root.bind("P", self.toggle_planned_route)
+        self.root.bind("o", self.toggle_b3_route)
+        self.root.bind("O", self.toggle_b3_route)
         self.root.bind("<Up>", lambda _event: self.manual_straight(5))
         self.root.bind("<Down>", lambda _event: self.manual_straight(-5))
         self.root.bind("<Left>", lambda _event: self.manual_curve(math.radians(15)))
@@ -73,6 +76,10 @@ class MDPSimulator:
         self.route_after_id = None
         self.visited_targets = set(self.route_engine.visited_ids)
         self.completed_targets = self.route_engine.completed_targets
+
+        self.b3_engine = B3RouteEngine(self.start_pose, self.obstacles)
+        self.b3_after_id = None
+        self.b3_completed_targets = self.b3_engine.completed_targets
 
         self.redraw()
 
@@ -125,6 +132,24 @@ class MDPSimulator:
         if len(route_points) >= 2:
             coordinates = [coordinate for point in route_points for coordinate in point]
             self.canvas.create_line(*coordinates, fill="#7c3aed", width=3, smooth=False)
+
+        # B.3 uses its actual precomputed safe A* waypoints. Draw it before the
+        # obstacles so the red virtual-obstacle outlines remain clearly visible.
+        b3_route_points = []
+        for path in self.b3_engine.route_paths:
+            for waypoint in path:
+                point = self.world_to_screen(waypoint.x, waypoint.y)
+                if not b3_route_points or point != b3_route_points[-1]:
+                    b3_route_points.append(point)
+        if len(b3_route_points) >= 2:
+            coordinates = [coordinate for point in b3_route_points for coordinate in point]
+            self.canvas.create_line(
+                *coordinates,
+                fill="#16a34a",
+                width=3,
+                dash=(10, 6),
+                smooth=False,
+            )
 
         for obstacle in self.obstacles:
             virtual_left = self.world_to_screen(obstacle.x - 15, obstacle.y + 10 + 15)[0]
@@ -199,6 +224,7 @@ class MDPSimulator:
         if self.route_order:
             route_summary = " -> ".join(str(item) for item in self.route_order)
         completion_text = f"Completed: {self.completed_targets}/{len(self.route_targets)} targets"
+        b3_summary = " -> ".join(str(item) for item in self.b3_engine.route_order)
         text = (
             "B.1 SIMULATOR\n\n"
             "Orange edge = image face\n"
@@ -210,9 +236,19 @@ class MDPSimulator:
             f"Visit order: {route_summary}\n"
             f"Total distance: {self.route_distance:.1f} cm\n"
             f"{completion_text}\n\n"
+            "B.3 OPTIMAL ROUTE\n"
+            "B3 chosen from 120 orders\n"
+            f"B3 order: {b3_summary}\n"
+            f"Estimated time: {self.b3_engine.plan.estimated_time:.1f} s\n"
+            f"Orders evaluated: {self.b3_engine.plan.orders_evaluated}\n"
+            f"Completed: {self.b3_completed_targets}/5\n\n"
+            "ROUTE LEGEND\n"
+            "Purple solid = B2 route\n"
+            "Green dashed = B3 shortest-time route\n\n"
             "CONTROLS\n"
             "Space  Play/pause B.2 route\n"
             "P      Play/pause B.2 route\n"
+            "O      Play/pause B.3 route\n"
             "D      Play/pause sample demo\n"
             "R      Reset\n"
             "Up     Forward 5 cm\n"
@@ -234,6 +270,7 @@ class MDPSimulator:
     def manual_straight(self, distance: float) -> None:
         self.stop_demo()
         self.stop_planned_route()
+        self.stop_b3_route()
         candidate = move_straight(self.pose, distance)
         if self.is_valid_pose(candidate):
             self.pose = candidate
@@ -242,6 +279,7 @@ class MDPSimulator:
     def manual_curve(self, angle: float) -> None:
         self.stop_demo()
         self.stop_planned_route()
+        self.stop_b3_route()
         candidate = move_curve(self.pose, angle)
         if self.is_valid_pose(candidate):
             self.pose = candidate
@@ -263,6 +301,7 @@ class MDPSimulator:
     def reset(self, _event: Optional[object] = None) -> None:
         self.stop_demo()
         self.stop_planned_route()
+        self.stop_b3_route()
         self.demo_index = 0
         self.demo_remaining = 0.0
         self.route_engine.reset()
@@ -270,6 +309,8 @@ class MDPSimulator:
         self.visited_targets = set(self.route_engine.visited_ids)
         self.completed_targets = self.route_engine.completed_targets
         self.pose = self.route_engine.pose
+        self.b3_engine.reset()
+        self.b3_completed_targets = self.b3_engine.completed_targets
         self.redraw()
 
     def toggle_demo(self, _event: Optional[object] = None) -> None:
@@ -278,6 +319,7 @@ class MDPSimulator:
             return
 
         self.stop_planned_route()
+        self.stop_b3_route()
         # Pressing play after a completed route starts it again from the beginning.
         if self.demo_index >= len(self.demo_commands):
             self.demo_index = 0
@@ -328,6 +370,7 @@ class MDPSimulator:
 
     def toggle_planned_route(self, _event: Optional[object] = None) -> None:
         self.stop_demo()
+        self.stop_b3_route()
         self.route_engine.toggle()
         self.route_running = self.route_engine.running and not self.route_engine.paused
         if self.route_after_id is not None:
@@ -354,6 +397,32 @@ class MDPSimulator:
         if not self.route_engine.running:
             return
         self.route_after_id = self.root.after(30, self.animate_planned_route)
+
+    def stop_b3_route(self) -> None:
+        self.b3_engine.running = False
+        if self.b3_after_id is not None:
+            self.root.after_cancel(self.b3_after_id)
+            self.b3_after_id = None
+
+    def toggle_b3_route(self, _event: Optional[object] = None) -> None:
+        self.stop_demo()
+        self.stop_planned_route()
+        self.b3_engine.toggle()
+        if self.b3_after_id is not None:
+            self.root.after_cancel(self.b3_after_id)
+            self.b3_after_id = None
+        if self.b3_engine.running and not self.b3_engine.paused:
+            self.b3_after_id = self.root.after(30, self.animate_b3_route)
+
+    def animate_b3_route(self) -> None:
+        self.b3_after_id = None
+        if not self.b3_engine.running:
+            return
+        self.pose = self.b3_engine.step()
+        self.b3_completed_targets = self.b3_engine.completed_targets
+        self.redraw()
+        if self.b3_engine.running:
+            self.b3_after_id = self.root.after(30, self.animate_b3_route)
 
     def run(self) -> None:
         self.root.mainloop()

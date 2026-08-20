@@ -36,6 +36,7 @@ or install the Homebrew `python-tk` formula that matches your Python version.
 | --- | --- |
 | `Space` | Play or pause the complete planned route |
 | `P` | Play or pause the complete planned route |
+| `O` | Play or pause the exhaustive B.3 shortest-time route |
 | `D` | Play or pause the short sample movement demo |
 | `R` | Reset the robot to the start zone |
 | `Up` | Move robot forward 5 cm |
@@ -51,6 +52,7 @@ or install the Homebrew `python-tk` formula that matches your Python version.
 - `motion.py`: moves the robot in straight lines and minimum-radius turns.
 - `simulator.py`: draws the grid map and animation.
 - `main.py`: contains the sample obstacle map and launches the application.
+- `b3_optimizer.py`: exhaustively scores all 120 safe target orders and plays the best route.
 
 ## What to do next
 
