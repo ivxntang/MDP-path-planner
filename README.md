@@ -1,4 +1,4 @@
-# MDP Path Planner - B.1 Simulator
+# MDP Path Planner - Physical Car Simulator and Map Editor
 
 This is the first deliverable for the SC2079 Robot Path Planning module.
 
@@ -36,6 +36,7 @@ or install the Homebrew `python-tk` formula that matches your Python version.
 | --- | --- |
 | `Space` | Play or pause the complete planned route |
 | `P` | Play or pause the complete planned route |
+| `3` | Play or pause the car-feasible B.3 route |
 | `D` | Play or pause the short sample movement demo |
 | `R` | Reset the robot to the start zone |
 | `Up` | Move robot forward 5 cm |
@@ -43,6 +44,15 @@ or install the Homebrew `python-tk` formula that matches your Python version.
 | `Left` | Make a 15 degree left curved movement |
 | `Right` | Make a 15 degree right curved movement |
 | `Esc` | Close the simulator |
+| `Left drag` | Move and snap an obstacle to the 5 cm grid |
+| `Right click` | Cycle an obstacle image face N, E, S, W |
+
+The map legend uses a red outline for the configurable forbidden safety zone,
+a purple solid line for the B.2 grid route, a green dashed line for the B.3
+selected route, and a cyan solid line for the car-feasible executable route.
+The B.3 panel lists the selected `F`, `B`, `FL`, `FR`, `BL`, and `BR`
+segments and their estimated execution time. During playback the robot changes
+to orange while executing a reverse segment.
 
 ## File guide
 

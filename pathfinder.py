@@ -4,21 +4,22 @@ import heapq
 import math
 from typing import Iterable, List, Tuple
 
+from config import ARENA_CM, OBSTACLE_CM, ROBOT_WIDTH_CM, SAFETY_MARGIN_CM
 from models import Obstacle, Pose
 
 GRID_SIZE_CM = 5
-ARENA_MIN_CM = 15
-ARENA_MAX_CM = 185
-ROBOT_HALF_WIDTH_CM = 15
+ROBOT_HALF_WIDTH_CM = ROBOT_WIDTH_CM / 2 + SAFETY_MARGIN_CM
+ARENA_MIN_CM = ROBOT_HALF_WIDTH_CM
+ARENA_MAX_CM = ARENA_CM - ROBOT_HALF_WIDTH_CM
 
 
 def virtual_obstacle_bounds(obstacle: Obstacle) -> Tuple[float, float, float, float]:
     """Return the inflated 40x40 cm box around a 10x10 obstacle."""
     return (
         obstacle.x - ROBOT_HALF_WIDTH_CM,
-        obstacle.x + 10 + ROBOT_HALF_WIDTH_CM,
+        obstacle.x + OBSTACLE_CM + ROBOT_HALF_WIDTH_CM,
         obstacle.y - ROBOT_HALF_WIDTH_CM,
-        obstacle.y + 10 + ROBOT_HALF_WIDTH_CM,
+        obstacle.y + OBSTACLE_CM + ROBOT_HALF_WIDTH_CM,
     )
 
 

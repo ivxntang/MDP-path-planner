@@ -8,15 +8,24 @@ from config import (
     ANIMATION_STEP_CM,
     ARENA_CM,
     GRID_CELL_CM,
+    FORWARD_SPEED_CM_S,
     MARGIN_PX,
     OBSTACLE_CM,
     PANEL_WIDTH_PX,
     ROBOT_CM,
+    ROBOT_LENGTH_CM,
+    ROBOT_WIDTH_CM,
+    REVERSE_PENALTY,
+    REVERSE_SPEED_CM_S,
+    SAFETY_MARGIN_CM,
     SCALE,
     TURN_RADIUS_CM,
+    TURNING_SPEED_CM_S,
 )
 from models import Obstacle, Pose
 from motion import move_curve, move_straight
+from map_editor import MapEditorModel
+from physical_planner import CarRouteEngine
 from route_engine import RouteEngine, point_in_virtual_obstacle
 from targets import viewing_target
 
@@ -62,6 +71,14 @@ class MDPSimulator:
         self.root.bind("<Left>", lambda _event: self.manual_curve(math.radians(15)))
         self.root.bind("<Right>", lambda _event: self.manual_curve(-math.radians(15)))
         self.root.bind("<Escape>", lambda _event: self.root.destroy())
+        self.root.bind("3", self.toggle_car_route)
+        self.canvas.bind("<ButtonPress-1>", self.begin_obstacle_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.end_obstacle_drag)
+        self.canvas.bind("<Button-3>", self.cycle_obstacle_face)
+
+        self.editor = MapEditorModel(self.obstacles)
+        self.dragged_obstacle_id = None
+        self.edit_error = ""
 
         self.route_engine = RouteEngine(self.start_pose, self.obstacles)
         self.route_order = self.route_engine.route_order
@@ -73,6 +90,8 @@ class MDPSimulator:
         self.route_after_id = None
         self.visited_targets = set(self.route_engine.visited_ids)
         self.completed_targets = self.route_engine.completed_targets
+        self.car_engine = CarRouteEngine(self.start_pose, self.obstacles)
+        self.car_after_id = None
 
         self.redraw()
 
@@ -126,11 +145,19 @@ class MDPSimulator:
             coordinates = [coordinate for point in route_points for coordinate in point]
             self.canvas.create_line(*coordinates, fill="#7c3aed", width=3, smooth=False)
 
+        # B.3 selection (target order) and its non-holonomic executable path.
+        selected = [self.world_to_screen(self.start_pose.x, self.start_pose.y)]
+        selected.extend(self.world_to_screen(target.x, target.y) for target in self.car_engine.route_targets)
+        if len(selected) >= 2:
+            self.canvas.create_line(*[value for point in selected for value in point], fill="#16a34a", width=2, dash=(7, 5))
+        executable = [self.world_to_screen(pose.x, pose.y) for pose in self.car_engine.executable_path]
+        if len(executable) >= 2:
+            self.canvas.create_line(*[value for point in executable for value in point], fill="#06b6d4", width=3)
+
         for obstacle in self.obstacles:
-            virtual_left = self.world_to_screen(obstacle.x - 15, obstacle.y + 10 + 15)[0]
-            virtual_top = self.world_to_screen(obstacle.x + 10 + 15, obstacle.y + 10 + 15)[1]
-            virtual_right = self.world_to_screen(obstacle.x + 10 + 15, obstacle.y - 15)[0]
-            virtual_bottom = self.world_to_screen(obstacle.x - 15, obstacle.y - 15)[1]
+            clearance = max(ROBOT_LENGTH_CM, ROBOT_WIDTH_CM) / 2 + SAFETY_MARGIN_CM
+            virtual_left, virtual_top = self.world_to_screen(obstacle.x - clearance, obstacle.y + OBSTACLE_CM + clearance)
+            virtual_right, virtual_bottom = self.world_to_screen(obstacle.x + OBSTACLE_CM + clearance, obstacle.y - clearance)
             self.canvas.create_rectangle(
                 virtual_left,
                 virtual_top,
@@ -184,7 +211,13 @@ class MDPSimulator:
                     cy - local_x * sine + local_y * cosine,
                 )
             )
-        self.canvas.create_polygon(*corners, fill="#2563eb", outline="#1e3a8a", width=2)
+        reversing = self.car_engine.running and self.car_engine.active_command.startswith("B")
+        self.canvas.create_polygon(
+            *corners,
+            fill="#f59e0b" if reversing else "#2563eb",
+            outline="#92400e" if reversing else "#1e3a8a",
+            width=2,
+        )
 
         # Screen y increases downward, hence subtract sin(theta).
         tip_x = cx + half * 0.9 * math.cos(self.pose.theta)
@@ -199,10 +232,22 @@ class MDPSimulator:
         if self.route_order:
             route_summary = " -> ".join(str(item) for item in self.route_order)
         completion_text = f"Completed: {self.completed_targets}/{len(self.route_targets)} targets"
+        commands = [segment.command for segment in self.car_engine.executable_segments]
+        compressed_commands = []
+        for command in commands:
+            if not compressed_commands or compressed_commands[-1][0] != command:
+                compressed_commands.append([command, 1])
+            else:
+                compressed_commands[-1][1] += 1
+        command_text = " ".join(f"{command}x{count}" for command, count in compressed_commands)
         text = (
             "B.1 SIMULATOR\n\n"
             "Orange edge = image face\n"
             "Green dot = viewing target\n\n"
+            "Red outline = forbidden safety zone\n"
+            "Purple solid = B.2 grid route\n"
+            "Green dashed = B.3 selected route\n"
+            "Cyan solid = executable car route\n\n"
             f"Robot x: {self.pose.x:.1f} cm\n"
             f"Robot y: {self.pose.y:.1f} cm\n"
             f"Heading: {heading_deg:.0f} degrees\n\n"
@@ -210,9 +255,18 @@ class MDPSimulator:
             f"Visit order: {route_summary}\n"
             f"Total distance: {self.route_distance:.1f} cm\n"
             f"{completion_text}\n\n"
+            "B.3 TIME-OPTIMISED CAR ROUTE\n"
+            f"Estimated time: {self.car_engine.estimated_travel_time:.1f} s\n"
+            f"Active command: {self.car_engine.active_command}\n"
+            f"Segments: {command_text}\n"
+            "F/B = gear, L/R = steering\n"
+            "Orange robot = reversing\n\n"
             "CONTROLS\n"
             "Space  Play/pause B.2 route\n"
             "P      Play/pause B.2 route\n"
+            "3      Play/pause B.3 car route\n"
+            "Drag   Move obstacle (5 cm snap)\n"
+            "Right  Cycle obstacle image face\n"
             "D      Play/pause sample demo\n"
             "R      Reset\n"
             "Up     Forward 5 cm\n"
@@ -222,6 +276,102 @@ class MDPSimulator:
             "Esc    Close"
         )
         self.canvas.create_text(panel_x, MARGIN_PX, text=text, anchor="nw", justify="left", fill="#0f172a", font=("Arial", 12))
+        if self.edit_error:
+            self.canvas.create_text(panel_x, MARGIN_PX + 500, text=self.edit_error, anchor="nw", fill="#dc2626", width=PANEL_WIDTH_PX - 30)
+
+    def screen_to_world(self, screen_x: float, screen_y: float) -> Tuple[float, float]:
+        return (screen_x - MARGIN_PX) / SCALE, ARENA_CM - (screen_y - MARGIN_PX) / SCALE
+
+    def begin_obstacle_drag(self, event: object) -> None:
+        x, y = self.screen_to_world(event.x, event.y)
+        obstacle = self.editor.obstacle_at(x, y)
+        self.dragged_obstacle_id = obstacle.obstacle_id if obstacle else None
+
+    def end_obstacle_drag(self, event: object) -> None:
+        if self.dragged_obstacle_id is None:
+            return
+        x, y = self.screen_to_world(event.x, event.y)
+        obstacle = next(item for item in self.obstacles if item.obstacle_id == self.dragged_obstacle_id)
+        # Preserve the pointer's initial convention by centring the obstacle at release.
+        previous = list(self.editor.obstacles)
+        if self.editor.move(self.dragged_obstacle_id, x - OBSTACLE_CM / 2, y - OBSTACLE_CM / 2):
+            try:
+                self.recompute_routes_after_edit()
+            except ValueError as error:
+                self.editor.obstacles = previous
+                self.edit_error = str(error)
+        else:
+            self.edit_error = "Invalid placement: arena, start zone, or obstacle overlap"
+        self.dragged_obstacle_id = None
+        self.redraw()
+
+    def cycle_obstacle_face(self, event: object) -> None:
+        x, y = self.screen_to_world(event.x, event.y)
+        obstacle = self.editor.obstacle_at(x, y)
+        if obstacle and self.editor.cycle_face(obstacle.obstacle_id):
+            previous_side = obstacle.image_side
+            try:
+                self.recompute_routes_after_edit()
+            except ValueError as error:
+                # Restore just the cycled face; positions are unchanged.
+                while self.editor.obstacle_at(x, y).image_side != previous_side:
+                    self.editor.cycle_face(obstacle.obstacle_id)
+                self.edit_error = str(error)
+            self.redraw()
+
+    def recompute_routes_after_edit(self) -> None:
+        self.stop_demo()
+        self.stop_planned_route()
+        if self.car_after_id is not None:
+            self.root.after_cancel(self.car_after_id)
+            self.car_after_id = None
+        edited_obstacles = list(self.editor.obstacles)
+        new_route_engine = RouteEngine(self.start_pose, edited_obstacles)
+        new_car_engine = CarRouteEngine(self.start_pose, edited_obstacles)
+        self.obstacles = edited_obstacles
+        self.route_engine = new_route_engine
+        self.car_engine = new_car_engine
+        self.route_order = self.route_engine.route_order
+        self.route_targets = self.route_engine.route_targets
+        self.route_distance = self.route_engine.total_distance
+        self.route_order_map = {obstacle_id: index + 1 for index, obstacle_id in enumerate(self.route_order)}
+        self.route_index = 0
+        self.visited_targets = set()
+        self.completed_targets = 0
+        self.demo_index = 0
+        self.demo_remaining = 0.0
+        self.pose = Pose(self.start_pose.x, self.start_pose.y, self.start_pose.theta)
+        self.edit_error = ""
+
+    def toggle_car_route(self, _event: Optional[object] = None) -> None:
+        self.stop_demo()
+        self.stop_planned_route()
+        self.car_engine.toggle()
+        if self.car_engine.running:
+            self.car_after_id = self.root.after(30, self.animate_car_route)
+
+    def stop_car_route(self) -> None:
+        self.car_engine.running = False
+        if self.car_after_id is not None:
+            self.root.after_cancel(self.car_after_id)
+            self.car_after_id = None
+
+    def animate_car_route(self) -> None:
+        self.car_after_id = None
+        self.pose = self.car_engine.step()
+        self.visited_targets = set(self.car_engine.visited_ids)
+        self.completed_targets = self.car_engine.completed_targets
+        self.redraw()
+        if self.car_engine.running:
+            command = self.car_engine.active_command
+            if "L" in command or "R" in command:
+                speed = TURNING_SPEED_CM_S
+            elif command.startswith("B"):
+                speed = REVERSE_SPEED_CM_S / REVERSE_PENALTY
+            else:
+                speed = FORWARD_SPEED_CM_S
+            delay_ms = round(30 * FORWARD_SPEED_CM_S / speed)
+            self.car_after_id = self.root.after(delay_ms, self.animate_car_route)
 
     def is_valid_pose(self, pose: Pose) -> bool:
         if not (15 <= pose.x <= 185 and 15 <= pose.y <= 185):
@@ -266,6 +416,7 @@ class MDPSimulator:
         self.demo_index = 0
         self.demo_remaining = 0.0
         self.route_engine.reset()
+        self.car_engine.reset()
         self.route_index = self.route_engine.route_index
         self.visited_targets = set(self.route_engine.visited_ids)
         self.completed_targets = self.route_engine.completed_targets

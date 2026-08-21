@@ -5,12 +5,12 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Set, Tuple
 
-from config import ANIMATION_STEP_CM, ARENA_CM, GRID_CELL_CM, OBSTACLE_CM, ROBOT_CM
+from config import ANIMATION_STEP_CM, ARENA_CM, GRID_CELL_CM, OBSTACLE_CM, ROBOT_WIDTH_CM, SAFETY_MARGIN_CM
 from models import Obstacle, Pose
 from targets import viewing_target
 
 GRID_SIZE_CM = 5
-ROBOT_HALF_WIDTH_CM = ROBOT_CM / 2
+ROBOT_HALF_WIDTH_CM = ROBOT_WIDTH_CM / 2 + SAFETY_MARGIN_CM
 ARENA_MIN_CM = ROBOT_HALF_WIDTH_CM
 ARENA_MAX_CM = ARENA_CM - ROBOT_HALF_WIDTH_CM
 Point = Tuple[float, float]
